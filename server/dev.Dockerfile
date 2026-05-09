@@ -1,9 +1,11 @@
-FROM python:3.12
+FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.12.9
 
 WORKDIR /app
 
 # Install Poetry
-RUN curl -sSL https://install.python-poetry.org | python3 -
+COPY server/install-poetry.py /tmp/install-poetry.py
+RUN python3 /tmp/install-poetry.py
+
 ENV PATH="/root/.local/bin:$PATH"
 
 # Copy requirements first for better caching
@@ -21,5 +23,7 @@ RUN pip install -e .[graph]
 # Return to app directory and copy server code
 WORKDIR /app
 COPY server .
+
+RUN pip install  ./en_core_web_sm-3.7.1-py3-none-any.whl
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
