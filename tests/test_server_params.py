@@ -239,6 +239,42 @@ class TestAddAllNewParams:
         assert kwargs["prompt"] == "Custom extraction prompt."
 
 
+class TestAddConversationMemory:
+
+    def test_conversation_messages_and_params_forwarded(self, client, mock_memory):
+        resp = client.post("/memories/conversation", json={
+            "user_msg": "I prefer vegetarian meals.",
+            "agent_msg": "I'll remember that you prefer vegetarian meals.",
+            "user_id": "u1",
+            "agent_id": "a1",
+            "run_id": "r1",
+            "metadata": {"source": "chat"},
+            "infer": True,
+            "memory_type": "core",
+            "prompt": "Extract user preferences only.",
+        })
+        assert resp.status_code == 200
+        _, kwargs = mock_memory.add.call_args
+        assert kwargs["messages"] == [
+            {"role": "user", "content": "I prefer vegetarian meals."},
+            {"role": "assistant", "content": "I'll remember that you prefer vegetarian meals."},
+        ]
+        assert kwargs["user_id"] == "u1"
+        assert kwargs["agent_id"] == "a1"
+        assert kwargs["run_id"] == "r1"
+        assert kwargs["metadata"] == {"source": "chat"}
+        assert kwargs["infer"] is True
+        assert kwargs["memory_type"] == "core"
+        assert kwargs["prompt"] == "Extract user preferences only."
+
+    def test_conversation_requires_identifier(self, client):
+        resp = client.post("/memories/conversation", json={
+            "user_msg": "hello",
+            "agent_msg": "hi",
+        })
+        assert resp.status_code == 400
+
+
 # ===========================================================================
 # Edge cases: falsy-but-valid values must not be filtered out
 # ===========================================================================
@@ -356,6 +392,12 @@ class TestOpenAPISchema:
         schema = client.get("/openapi.json").json()
         add_props = schema["components"]["schemas"]["MemoryCreate"]["properties"]
         assert "prompt" in add_props
+
+    def test_conversation_schema_includes_message_fields(self, client):
+        schema = client.get("/openapi.json").json()
+        add_props = schema["components"]["schemas"]["ConversationMemoryCreate"]["properties"]
+        assert "user_msg" in add_props
+        assert "agent_msg" in add_props
 
 
 # ===========================================================================

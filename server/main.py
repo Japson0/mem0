@@ -32,7 +32,6 @@ from routers import entities as entities_router
 from routers import requests as requests_router
 from schemas import MessageResponse
 from server_state import get_current_config, get_memory_instance, initialize_state, set_session_factory, update_config
-from mcp_server import Mem0MCPServer
 
 load_dotenv()
 
@@ -164,7 +163,6 @@ app.include_router(auth_router.router)
 app.include_router(api_keys_router.router)
 app.include_router(entities_router.router)
 app.include_router(requests_router.router)
-Mem0MCPServer().setup(app)
 
 
 class Message(BaseModel):
@@ -174,6 +172,18 @@ class Message(BaseModel):
 
 class MemoryCreate(BaseModel):
     messages: List[Message] = Field(..., description="List of messages to store.")
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    run_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    infer: Optional[bool] = Field(None, description="Whether to extract facts from messages. Defaults to True.")
+    memory_type: Optional[str] = Field(None, description="Type of memory to store (e.g. 'core').")
+    prompt: Optional[str] = Field(None, description="Custom prompt to use for fact extraction.")
+
+
+class ConversationMemoryCreate(BaseModel):
+    user_msg: str = Field(..., description="User message content to store.")
+    agent_msg: str = Field(..., description="AI assistant response content to store.")
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
     run_id: Optional[str] = None
@@ -361,8 +371,29 @@ def add_memory(memory_create: MemoryCreate, _auth=Depends(verify_auth)):
         raise upstream_error()
 
 
+@app.post("/memories/conversation", summary="Create memories from conversation")
+def add_conversation_memory(memory_create: ConversationMemoryCreate, _auth=Depends(verify_auth)):
+    """Store memories from a single user message and AI assistant response."""
+    if not any([memory_create.user_id, memory_create.agent_id, memory_create.run_id]):
+        raise HTTPException(status_code=400, detail="At least one identifier (user_id, agent_id, run_id) is required.")
+
+    messages = [
+        {"role": "user", "content": memory_create.user_msg},
+        {"role": "assistant", "content": memory_create.agent_msg},
+    ]
+    params = {
+        k: v for k, v in memory_create.model_dump().items() if v is not None and k not in {"user_msg", "agent_msg"}
+    }
+    try:
+        response = get_memory_instance().add(messages=messages, **params)
+        return JSONResponse(content=response)
+    except Exception:
+        raise upstream_error()
+
+
 ALL_MEMORIES_LIMIT = 1000
 _RESERVED_PAYLOAD_KEYS = {"data", "user_id", "agent_id", "run_id", "hash", "created_at", "updated_at"}
+_ENTITY_FILTER_KEYS = ("user_id", "agent_id", "run_id")
 
 
 def _serialize_memory(row: Any) -> Dict[str, Any]:
@@ -384,6 +415,17 @@ def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
     results = get_memory_instance().vector_store.list(top_k=limit)
     rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
     return {"results": [_serialize_memory(row) for row in rows]}
+
+
+def _merge_entity_filters(payload: Dict[str, Any]) -> Dict[str, Any]:
+    params = {k: v for k, v in payload.items() if v is not None and k not in (*_ENTITY_FILTER_KEYS, "query")}
+    filters = dict(params.get("filters") or {})
+    for key in _ENTITY_FILTER_KEYS:
+        if payload.get(key) is not None:
+            filters[key] = payload[key]
+    if filters:
+        params["filters"] = filters
+    return params
 
 
 @app.get("/memories", summary="Get memories")
@@ -418,7 +460,7 @@ def get_memory(memory_id: str, _auth=Depends(verify_auth)):
 def search_memories(search_req: SearchRequest, _auth=Depends(verify_auth)):
     """Search for memories based on a query."""
     try:
-        params = {k: v for k, v in search_req.model_dump().items() if v is not None and k != "query"}
+        params = _merge_entity_filters(search_req.model_dump())
         return get_memory_instance().search(query=search_req.query, **params)
     except Exception:
         raise upstream_error()
